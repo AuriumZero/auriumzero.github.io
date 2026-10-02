@@ -77,6 +77,30 @@ footer { color: var(--muted); font-size: 14px; border-top: 1px solid var(--line)
         </div>
       </div>
     </article>
+    <article class="project" style="margin-top:16px">
+      <a href="/sprint-summary-generator/"><img src="images/sprint-summary-generator.png" alt="Sprint metrics from a Jira export: 69% completion, points delivered, carryover, and completed work by epic and issue type" width="1360" height="760" loading="lazy"></a>
+      <div>
+        <h3>Sprint Summary Generator</h3>
+        <p>Turns a Jira sprint export into a sprint review summary for executives and the team. Metrics are calculated in code; Claude optionally writes the narrative from a redacted payload you can preview, and its answer is checked for invented tickets and figures. Runs in the browser, with no Jira connection.</p>
+        <ul class="stack"><li>React</li><li>TypeScript</li><li>Claude API</li><li>Vitest</li><li>GitHub Actions</li></ul>
+        <div class="links">
+          <a class="btn primary" href="/sprint-summary-generator/">Live demo</a>
+          <a class="btn" href="https://github.com/AuriumZero/sprint-summary-generator">Source code</a>
+        </div>
+      </div>
+    </article>
+    <article class="project" style="margin-top:16px">
+      <a href="/raid-log-assistant/"><img src="images/raid-log-assistant.png" alt="Proposed RAID log changes, each with the quote from the meeting notes it came from and accept or reject buttons" width="1360" height="760" loading="lazy"></a>
+      <div>
+        <h3>RAID Log Assistant</h3>
+        <p>Keeps a RAID log current from meeting notes and Jira exports. Proposes new risks, assumptions, issues and dependencies, updates and closures, each traced to its source quote, and changes nothing until a person approves it. Works offline with a rules engine, or with Claude for messier notes.</p>
+        <ul class="stack"><li>React</li><li>TypeScript</li><li>Claude API</li><li>Vitest</li><li>GitHub Actions</li></ul>
+        <div class="links">
+          <a class="btn primary" href="/raid-log-assistant/">Live demo</a>
+          <a class="btn" href="https://github.com/AuriumZero/raid-log-assistant">Source code</a>
+        </div>
+      </div>
+    </article>
   </section>
 
   <footer>© <span id="yr">2026</span> Jeno</footer>
