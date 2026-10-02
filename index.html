@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Jeno · Portfolio</title>
-<meta name="description" content="Projects built by Jeno.">
+<title>Jeno · Delivery tools and side projects</title>
+<meta name="description" content="Agile, scalable program and project management tools built by Jeno, a Senior Project Manager and Scrum Master, plus tools for his woodworking business.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;700&family=Public+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400&display=swap">
 <style>
@@ -28,7 +28,13 @@ a { color: inherit }
 .btn:hover { border-color: var(--muted) }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg) }
 .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px }
-.label { font: 400 12px var(--f-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin-bottom: 16px }
+.label { font: 400 12px var(--f-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin-bottom: 8px }
+.section-head { margin-bottom: 20px }
+.section-head h2 { font-size: clamp(24px, 3.4vw, 30px); font-weight: 700; line-height: 1.15 }
+.section-head p { color: var(--muted); max-width: 64ch; margin: 8px 0 0 }
+.project + .project { margin-top: 16px }
+.focus { display: flex; flex-wrap: wrap; gap: 8px; margin: 22px 0 0; padding: 0; list-style: none }
+.focus li { font-size: 14px; border: 1px solid var(--line); background: var(--surface); border-radius: 999px; padding: 4px 12px }
 .project { display: grid; grid-template-columns: 1.25fr 1fr; gap: 28px; align-items: center; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 22px }
 .project img { width: 100%; height: auto; border-radius: 6px; border: 1px solid var(--line); display: block }
 .project h3 { font-size: 26px }
@@ -41,18 +47,26 @@ footer { color: var(--muted); font-size: 14px; border-top: 1px solid var(--line)
 </head>
 <body>
 <div class="wrap">
-  <!-- Edit the intro paragraph below to describe yourself and the kind of role you're looking for. -->
   <header class="intro">
     <h1>Hi, I'm Jeno.</h1>
-    <p>I build practical web tools. This is a collection of my projects, each with a live demo you can try and the source code behind it.</p>
+    <p>I'm a Senior Project Manager and Scrum Master for analytics teams. I build agile, scalable tools for the day-to-day work of running programs and projects: planning, sprint reporting, and keeping risks visible. Outside the day job, I build tools for my woodworking business.</p>
+    <ul class="focus" aria-label="What these projects show">
+      <li>Agile delivery</li><li>Program management</li><li>Practical AI with human review</li><li>Data privacy by design</li>
+    </ul>
     <nav class="links">
-      <a class="btn primary" href="https://github.com/AuriumZero">GitHub</a>
+      <a class="btn primary" href="#delivery">Delivery tools</a>
+      <a class="btn" href="#woodworking">Woodworking projects</a>
+      <a class="btn" href="https://github.com/AuriumZero">GitHub</a>
     </nav>
   </header>
 
-  <section>
-    <div class="label">Projects</div>
-    <!-- To add a project, copy this <article> block and change the text, image and links. -->
+  <section id="delivery" aria-labelledby="delivery-h">
+    <div class="section-head">
+      <div class="label">Day to day</div>
+      <h2 id="delivery-h">Program and project management tools</h2>
+      <p>Tools for the recurring work of running agile teams: planning and scheduling, sprint reviews, and keeping a RAID log current. Each runs in the browser with no server, so nothing proprietary leaves your machine, and AI is used only where it helps, with a person approving the result.</p>
+    </div>
+    <!-- To add a project, copy an <article> block and change the text, image and links. -->
     <article class="project">
       <a href="/project-management-central/"><img src="images/project-management-central.png" alt="Gantt chart view of Project Management Central showing tasks, dependencies and a today marker" width="1360" height="760" loading="lazy"></a>
       <div>
@@ -65,19 +79,7 @@ footer { color: var(--muted); font-size: 14px; border-top: 1px solid var(--line)
         </div>
       </div>
     </article>
-    <article class="project" style="margin-top:16px">
-      <a href="https://auriumzero.github.io/cedar-planter-calculator/"><img src="images/cedar-planter-calculator.png" alt="Cedar planter calculator showing cut list, rip cut summary and planting depth slider" width="1360" height="760" loading="lazy"></a>
-      <div>
-        <h3>Cedar Planter Calculator</h3>
-        <p>An offline tool for planning cedar fence-picket planters. Handles multi-build layouts with planter, frame and trellis types — outputs optimized cut lists, gang cut guides, rip cut summaries and a print-ready sheet.</p>
-        <ul class="stack"><li>JavaScript</li><li>HTML &amp; CSS</li><li>SVG</li></ul>
-        <div class="links">
-          <a class="btn primary" href="https://auriumzero.github.io/cedar-planter-calculator/">Live demo</a>
-          <a class="btn" href="https://github.com/AuriumZero/cedar-planter-calculator">Source code</a>
-        </div>
-      </div>
-    </article>
-    <article class="project" style="margin-top:16px">
+    <article class="project">
       <a href="/sprint-summary-generator/"><img src="images/sprint-summary-generator.png" alt="Sprint metrics from a Jira export: 69% completion, points delivered, carryover, and completed work by epic and issue type" width="1360" height="760" loading="lazy"></a>
       <div>
         <h3>Sprint Summary Generator</h3>
@@ -89,7 +91,7 @@ footer { color: var(--muted); font-size: 14px; border-top: 1px solid var(--line)
         </div>
       </div>
     </article>
-    <article class="project" style="margin-top:16px">
+    <article class="project">
       <a href="/raid-log-assistant/"><img src="images/raid-log-assistant.png" alt="Proposed RAID log changes, each with the quote from the meeting notes it came from and accept or reject buttons" width="1360" height="760" loading="lazy"></a>
       <div>
         <h3>RAID Log Assistant</h3>
@@ -98,6 +100,26 @@ footer { color: var(--muted); font-size: 14px; border-top: 1px solid var(--line)
         <div class="links">
           <a class="btn primary" href="/raid-log-assistant/">Live demo</a>
           <a class="btn" href="https://github.com/AuriumZero/raid-log-assistant">Source code</a>
+        </div>
+      </div>
+    </article>
+  </section>
+
+  <section id="woodworking" aria-labelledby="wood-h">
+    <div class="section-head">
+      <div class="label">Outside the day job</div>
+      <h2 id="wood-h">Woodworking projects</h2>
+      <p>Tools for my cedar planter business: turning a customer's order into cut lists and a build plan that wastes as little lumber as possible.</p>
+    </div>
+    <article class="project">
+      <a href="https://auriumzero.github.io/cedar-planter-calculator/"><img src="images/cedar-planter-calculator.png" alt="Cedar planter calculator showing cut list, rip cut summary and planting depth slider" width="1360" height="760" loading="lazy"></a>
+      <div>
+        <h3>Cedar Planter Calculator</h3>
+        <p>An offline tool for planning cedar fence-picket planters. Handles multi-build layouts with planter, frame and trellis types — outputs optimized cut lists, gang cut guides, rip cut summaries and a print-ready sheet.</p>
+        <ul class="stack"><li>JavaScript</li><li>HTML &amp; CSS</li><li>SVG</li></ul>
+        <div class="links">
+          <a class="btn primary" href="https://auriumzero.github.io/cedar-planter-calculator/">Live demo</a>
+          <a class="btn" href="https://github.com/AuriumZero/cedar-planter-calculator">Source code</a>
         </div>
       </div>
     </article>
