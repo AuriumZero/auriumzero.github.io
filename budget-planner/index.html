@@ -100,6 +100,11 @@ button { cursor: pointer }
 .pill.auto { background: var(--accent-soft); color: var(--accent) }
 .pill.manual { background: var(--warn-soft); color: var(--warn) }
 .pill.late { background: var(--bad-soft); color: var(--bad) }
+.pill.debt { background: var(--sunk); color: var(--fg); border: 1px solid var(--line) }
+.check-list .meta { flex-wrap: wrap }
+.head-acts { display: flex; gap: 8px; flex-wrap: wrap }
+.muted { color: var(--muted) }
+td.linked { font-size: 13px; white-space: normal; min-width: 180px; line-height: 1.35 }
 
 /* calendar */
 .cal { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); }
@@ -214,7 +219,7 @@ tr.target .rank { background: var(--accent); color: var(--accent-fg) }
 const MODE = "public"; // "private" = Claude artifact db store, "public" = this browser's localStorage
 
 /* ---------- state ---------- */
-const EMPTY = () => ({ version: 1, people: [], bills: [], debts: [], extra: 0, method: "snowball", splitDay: 15, paid: {} });
+const EMPTY = () => ({ version: 1, people: [], bills: [], debts: [], extra: 0, method: "snowball", splitDay: 15, paid: {}, applied: {} });
 let S = null;          // current state, null until loaded
 let ready = false;
 const ui = { view: "month", ym: ymOf(new Date()) };
@@ -235,11 +240,14 @@ const monthShort = (y, m) => new Date(y, m, 1).toLocaleString("en-US", { month: 
 function normalize(s) {
   const b = Object.assign(EMPTY(), s || {});
   b.people = (b.people || []).map(p => ({ id: p.id || uid("p"), name: p.name || "", monthly: num(p.monthly) }));
-  b.bills = (b.bills || []).map(x => ({ id: x.id || uid("b"), name: x.name || "", amount: num(x.amount), day: Math.min(31, Math.max(1, Math.round(num(x.day)) || 1)), autopay: !!x.autopay, notes: x.notes || "" }));
+  b.bills = (b.bills || []).map(x => ({ id: x.id || uid("b"), name: x.name || "", amount: num(x.amount), day: Math.min(31, Math.max(1, Math.round(num(x.day)) || 1)), autopay: !!x.autopay, notes: x.notes || "", debtId: x.debtId || "" }));
   b.debts = (b.debts || []).map(d => ({ id: d.id || uid("d"), name: d.name || "", balance: num(d.balance), min: num(d.min), apr: num(d.apr) }));
   b.extra = num(b.extra); b.splitDay = Math.min(28, Math.max(2, Math.round(num(b.splitDay)) || 15));
   b.method = b.method === "avalanche" ? "avalanche" : "snowball";
   b.paid = b.paid && typeof b.paid === "object" ? b.paid : {};
+  b.applied = b.applied && typeof b.applied === "object" ? b.applied : {};
+  const debtIds = new Set(b.debts.map(d => d.id));
+  for (const x of b.bills) if (x.debtId && !debtIds.has(x.debtId)) x.debtId = "";
   return b;
 }
 
@@ -306,12 +314,43 @@ function renderKeepFocus() { const id = document.activeElement && document.activ
 /* ---------- calculations ---------- */
 function dueDay(bill, ym) { return Math.min(bill.day, daysIn(ym)) }
 function isPaid(ym, id) { return !!(S.paid[ym] && S.paid[ym][id]) }
-function togglePaid(ym, id, val) {
+/* Checking off a bill that is linked to a debt applies it as a payment:
+   the first payment to a debt in a month also adds that month's interest
+   (balance x APR / 12), and the rest of the payment reduces the balance.
+   Each application is recorded in S.applied[ym][billId] so unchecking
+   reverses it exactly. */
+function setPaid(ym, id, val) {
   S.paid[ym] = S.paid[ym] || {};
-  if (val) S.paid[ym][id] = true; else delete S.paid[ym][id];
+  if (val && !S.paid[ym][id]) { S.paid[ym][id] = true; applyPayment(ym, id) }
+  if (!val && S.paid[ym][id]) { delete S.paid[ym][id]; reversePayment(ym, id) }
   if (!Object.keys(S.paid[ym]).length) delete S.paid[ym];
-  commit();
 }
+function togglePaid(ym, id, val) { setPaid(ym, id, val); commit() }
+function entriesFor(ym, debtId) { return Object.entries(S.applied[ym] || {}).filter(([, e]) => e.debtId === debtId) }
+function applyPayment(ym, billId) {
+  const bill = S.bills.find(b => b.id === billId); if (!bill || !bill.debtId) return;
+  const debt = S.debts.find(d => d.id === bill.debtId); if (!debt) return;
+  const interest = entriesFor(ym, debt.id).some(([, e]) => e.interest > 0) ? 0 : round2(debt.balance * debt.apr / 1200);
+  const principal = round2(Math.min(bill.amount - interest, debt.balance));
+  debt.balance = round2(debt.balance - principal);
+  S.applied[ym] = S.applied[ym] || {};
+  S.applied[ym][billId] = { debtId: debt.id, payment: bill.amount, interest, principal };
+}
+function reversePayment(ym, billId) {
+  const e = S.applied[ym] && S.applied[ym][billId]; if (!e) return;
+  delete S.applied[ym][billId];
+  const debt = S.debts.find(d => d.id === e.debtId);
+  if (debt) {
+    debt.balance = round2(debt.balance + e.principal);
+    const other = entriesFor(ym, e.debtId)[0];
+    if (e.interest > 0 && other) {           // another payment that month now carries the interest
+      const o = other[1]; o.interest = e.interest; o.principal = round2(o.principal - e.interest); debt.balance = round2(debt.balance + e.interest);
+    }
+  }
+  if (!Object.keys(S.applied[ym]).length) delete S.applied[ym];
+}
+function round2(n) { return Math.round(n * 100) / 100 }
+function debtName(id) { const d = S.debts.find(x => x.id === id); return d ? (d.name || "debt") : "" }
 function lateness(ym, bill) {
   if (isPaid(ym, bill.id)) return "paid";
   const now = new Date(), cur = ymOf(now);
@@ -340,17 +379,20 @@ function simulate(extra, method) {
   const order = [...debts].sort((a, b) => method === "avalanche" ? (b.apr - a.apr || a.bal - b.bal) : (a.bal - b.bal || b.apr - a.apr));
   const budget = debts.reduce((a, d) => a + d.min, 0) + Math.max(0, extra);
   const start = new Date(); start.setDate(1);
+  const done = new Set(Object.values(S.applied[ymOf(start)] || {}).map(e => e.debtId)); // already paid this month
   const series = [{ t: 0, bal: debts.reduce((a, d) => a + d.bal, 0) }];
   let month = 0, totalInterest = 0;
   while (debts.some(d => d.bal > 0.005) && month < 600) {
     month++;
-    for (const d of debts) if (d.bal > 0.005) { const i = d.bal * d.apr / 100 / 12; d.bal += i; d.interest += i; totalInterest += i }
+    const skip = d => month === 1 && done.has(d.id);
+    for (const d of debts) if (d.bal > 0.005 && !skip(d)) { const i = d.bal * d.apr / 100 / 12; d.bal += i; d.interest += i; totalInterest += i }
     let pool = budget;
-    for (const d of debts) if (d.bal > 0.005) { const p = Math.min(d.min, d.bal); d.bal -= p; pool -= p }
+    for (const d of debts) if (skip(d)) pool -= d.min;
+    for (const d of debts) if (d.bal > 0.005 && !skip(d)) { const p = Math.min(d.min, d.bal); d.bal -= p; pool -= p }
     for (const d of order) { if (pool <= 0.005) break; if (d.bal > 0.005) { const p = Math.min(pool, d.bal); d.bal -= p; pool -= p } }
     for (const d of debts) if (d.bal <= 0.005 && d.paidOff === null) { d.bal = 0; d.paidOff = month }
     series.push({ t: month, bal: debts.reduce((a, d) => a + d.bal, 0) });
-    if (pool >= budget - 0.005) break; // no payment possible (all mins zero)
+    if (month > 1 && pool >= budget - 0.005) break; // no payment possible (all mins zero)
   }
   const stuck = debts.some(d => d.bal > 0.005);
   const at = n => { const d = new Date(start); d.setMonth(d.getMonth() + n - 1); return d };
@@ -423,7 +465,7 @@ function renderMonth() {
     const st = lateness(ym, b), d = dueDay(b, ym);
     return `<li class="${st === "paid" ? "done" : ""}">
       <input type="checkbox" class="box" id="chk-${b.id}" data-bill="${b.id}" ${st === "paid" ? "checked" : ""} aria-label="Mark ${esc(b.name)} paid">
-      <label for="chk-${b.id}" class="name"><span class="nm">${esc(b.name)}</span><span class="meta"><span class="mono">${mon} ${d}</span>${b.autopay ? `<span class="pill auto">Autopay</span>` : `<span class="pill manual">Pay manually</span>`}${st === "late" ? `<span class="pill late">Past due</span>` : ""}</span></label>
+      <label for="chk-${b.id}" class="name"><span class="nm">${esc(b.name)}</span><span class="meta"><span class="mono">${mon} ${d}</span>${b.autopay ? `<span class="pill auto">Autopay</span>` : `<span class="pill manual">Pay manually</span>`}${b.debtId ? `<span class="pill debt">Pays ${esc(debtName(b.debtId))}</span>` : ""}${st === "late" ? `<span class="pill late">Past due</span>` : ""}</span></label>
       <span></span>
       <span class="amt">${money(b.amount, true)}</span>
     </li>`;
@@ -431,7 +473,7 @@ function renderMonth() {
   const group = (label, list) => list.length ? `<div class="group-label"><span>${label}</span><span class="mono">${money(list.reduce((a, b) => a + b.amount, 0))}</span></div><ul class="check-list">${list.map(row).join("")}</ul>` : "";
   const checklist = `<section class="panel" aria-labelledby="cl-h">
     <div class="panel-head"><div><h2 id="cl-h">Bill checklist</h2><div class="sub">${paidCount} of ${S.bills.length} paid in ${monthName(ym)}. Checks reset each month.</div></div>
-    ${paidCount ? `<button class="txt-btn" data-act="clear-month">Uncheck all</button>` : ""}</div>
+    <div class="head-acts">${S.bills.length && paidCount < S.bills.length ? `<button class="txt-btn" data-act="check-month">Check all</button>` : ""}${paidCount ? `<button class="txt-btn" data-act="clear-month">Uncheck all</button>` : ""}</div></div>
     ${S.bills.length ? group(`Days 1–${sd - 1}`, sorted.filter(b => dueDay(b, ym) < sd)) + group(`Days ${sd}–${last}`, sorted.filter(b => dueDay(b, ym) >= sd))
       : `<div class="empty"><h3>No bills yet</h3>Add your recurring bills in Setup.<br><button class="txt-btn primary" data-act="go-setup">Add bills</button></div>`}
   </section>`;
@@ -464,6 +506,12 @@ function renderMonth() {
   el.innerHTML = ledger + halves + `<div class="grid2">${checklist}${calendar}</div>`;
 }
 
+function paidThisMonth(debtId) {
+  const es = entriesFor(ymOf(new Date()), debtId).map(([, e]) => e);
+  if (!es.length) return S.bills.some(b => b.debtId === debtId) ? `<span class="muted">Not yet</span>` : `<span class="muted">No linked bill</span>`;
+  const p = es.reduce((a, e) => a + e.payment, 0), i = es.reduce((a, e) => a + e.interest, 0);
+  return `${money(p, true)}<br><span class="muted" style="font-size:12px">${money(i, true)} interest</span>`;
+}
 function renderSnowball() {
   const el = document.getElementById("view-snowball");
   if (!S.debts.length) { el.innerHTML = `<div class="panel" style="margin-top:20px"><div class="empty"><h3>No debts listed</h3>Add each debt’s balance, minimum payment and APR in Setup to see a payoff plan.<br><button class="txt-btn primary" data-act="go-setup">Add debts</button></div></div>`; return }
@@ -499,11 +547,11 @@ function renderSnowball() {
     const target = i === sim.order.findIndex(x => x.balance > 0);
     return `<tr class="${target ? "target" : ""}"><td><span class="rank">${i + 1}</span></td><td>${esc(d.name)}</td>
       <td class="r amt">${money(d.balance, true)}</td><td class="r amt">${money(d.min, true)}</td><td class="r amt">${d.apr.toFixed(2)}%</td>
-      <td class="r amt">${money(d.balance * d.apr / 1200, true)}</td><td class="r amt">${d.paidOff ? ds(sim.at(d.paidOff)) : "—"}</td><td class="r amt">${money(d.interest, true)}</td></tr>`;
+      <td class="r amt">${money(d.balance * d.apr / 1200, true)}</td><td class="r amt">${paidThisMonth(d.id)}</td><td class="r amt">${d.paidOff ? ds(sim.at(d.paidOff)) : "—"}</td><td class="r amt">${money(d.interest, true)}</td></tr>`;
   }).join("");
   const table = `<section class="panel" style="margin-top:16px">
-    <div class="panel-head"><h2>Payoff order</h2><span class="sub">The highlighted debt gets every extra dollar. When it’s paid off, its payment rolls into the next one.</span></div>
-    <div class="tbl-wrap"><table><thead><tr><th>#</th><th>Debt</th><th class="r">Balance</th><th class="r">Minimum</th><th class="r">APR</th><th class="r">Interest / mo</th><th class="r">Paid off</th><th class="r">Interest paid</th></tr></thead><tbody>${rows}</tbody></table></div>
+    <div class="panel-head"><h2>Payoff order</h2><span class="sub">The highlighted debt gets every extra dollar. When it’s paid off, its payment rolls into the next one. Balances drop as you check off linked bills, and the projection starts after this month’s payments.</span></div>
+    <div class="tbl-wrap"><table><thead><tr><th>#</th><th>Debt</th><th class="r">Balance</th><th class="r">Minimum</th><th class="r">APR</th><th class="r">Interest / mo</th><th class="r">Paid this month</th><th class="r">Paid off</th><th class="r">Interest paid</th></tr></thead><tbody>${rows}</tbody></table></div>
   </section>`;
   el.innerHTML = `<div class="sb-top">${controls}<section class="panel"><div class="panel-head"><h2>Balance over time</h2><span class="sub">Total remaining across all debts</span></div><div class="chart-box">${chart}</div></section></div>${table}`;
 }
@@ -534,6 +582,10 @@ function balanceChart(sim, base) {
 }
 function niceStep(v) { const p = Math.pow(10, Math.floor(Math.log10(v || 1))); const f = v / p; return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10) * p }
 
+function linkedBills(debtId) {
+  const list = S.bills.filter(b => b.debtId === debtId);
+  return list.length ? list.map(b => `${esc(b.name || "Unnamed bill")} <span class="mono">(${money(b.amount)}, day ${b.day})</span>`).join("<br>") : `<span class="muted">No bill linked. Pick one in the bills table.</span>`;
+}
 function renderSetup() {
   const el = document.getElementById("view-setup");
   const inc = S.people.reduce((a, p) => a + p.monthly, 0), bills = S.bills.reduce((a, b) => a + b.amount, 0);
@@ -549,27 +601,29 @@ function renderSetup() {
 
     <section class="panel"><div class="panel-head"><div><h2>Recurring bills</h2><div class="sub">${S.bills.length} bills · ${money(bills, true)} a month</div></div>
       <label class="field" style="flex-direction:row;align-items:center;gap:8px">Second pay period starts on day <input id="splitDay" class="mono" style="width:4.5em" inputmode="numeric" value="${S.splitDay}"></label></div>
-      <div class="tbl-wrap"><table class="edit"><thead><tr><th class="r">Amount</th><th>Bill or payee</th><th class="r">Due day</th><th>Autopay</th><th>Notes</th><th></th></tr></thead><tbody>
+      <div class="tbl-wrap"><table class="edit"><thead><tr><th class="r">Amount</th><th>Bill or payee</th><th class="r">Due day</th><th>Autopay</th><th>Pays down debt</th><th>Notes</th><th></th></tr></thead><tbody>
       ${sortedBills.map(({ b }) => `<tr>
         <td style="width:120px"><input class="n" id="b-amt-${b.id}" data-k="bills" data-id="${b.id}" data-f="amount" value="${b.amount || ""}" inputmode="decimal" aria-label="Amount"></td>
         <td style="min-width:180px"><input id="b-name-${b.id}" data-k="bills" data-id="${b.id}" data-f="name" value="${esc(b.name)}" placeholder="Bill name" aria-label="Bill name"></td>
         <td style="width:90px"><input class="n" id="b-day-${b.id}" data-k="bills" data-id="${b.id}" data-f="day" value="${b.day}" inputmode="numeric" aria-label="Day of month due"></td>
         <td style="width:110px"><select id="b-auto-${b.id}" data-k="bills" data-id="${b.id}" data-f="autopay" aria-label="Autopay"><option value="1"${b.autopay ? " selected" : ""}>Yes</option><option value="0"${!b.autopay ? " selected" : ""}>No</option></select></td>
+        <td style="min-width:150px"><select id="b-debt-${b.id}" data-k="bills" data-id="${b.id}" data-f="debtId" aria-label="Debt this bill pays down"><option value="">None</option>${S.debts.map(d => `<option value="${d.id}"${b.debtId === d.id ? " selected" : ""}>${esc(d.name || "Unnamed debt")}</option>`).join("")}</select></td>
         <td style="min-width:140px"><input id="b-note-${b.id}" data-k="bills" data-id="${b.id}" data-f="notes" value="${esc(b.notes)}" aria-label="Notes"></td>
         <td><button class="rm" data-rm="bills" data-id="${b.id}" aria-label="Remove ${esc(b.name)}">×</button></td></tr>`).join("")}
       </tbody></table></div>
       <div class="add-row"><button class="txt-btn" data-add="bills">Add a bill</button><span class="hint">Bills stay sorted by due day.</span></div></section>
 
-    <section class="panel"><div class="panel-head"><div><h2>Debts</h2><div class="sub">Feeds the debt snowball. Update balances whenever you check your statements.</div></div></div>
-      <div class="tbl-wrap"><table class="edit"><thead><tr><th>Debt</th><th class="r">Balance</th><th class="r">Minimum</th><th class="r">APR %</th><th class="r">Interest / mo</th><th></th></tr></thead><tbody>
+    <section class="panel"><div class="panel-head"><div><h2>Debts</h2><div class="sub">Feeds the debt snowball. Checking off a linked bill pays down its debt, with an estimate of that month’s interest. Replace balances with your statement figures every month or two to stay exact.</div></div></div>
+      <div class="tbl-wrap"><table class="edit"><thead><tr><th>Debt</th><th class="r">Balance</th><th class="r">Minimum</th><th class="r">APR %</th><th class="r">Interest / mo</th><th>Paid by</th><th></th></tr></thead><tbody>
       ${S.debts.map(d => `<tr>
         <td style="min-width:160px"><input id="d-name-${d.id}" data-k="debts" data-id="${d.id}" data-f="name" value="${esc(d.name)}" placeholder="Debt name" aria-label="Debt name"></td>
         <td><input class="n" id="d-bal-${d.id}" data-k="debts" data-id="${d.id}" data-f="balance" value="${d.balance || ""}" inputmode="decimal" aria-label="Balance"></td>
         <td><input class="n" id="d-min-${d.id}" data-k="debts" data-id="${d.id}" data-f="min" value="${d.min || ""}" inputmode="decimal" aria-label="Minimum payment"></td>
         <td><input class="n" id="d-apr-${d.id}" data-k="debts" data-id="${d.id}" data-f="apr" value="${d.apr || ""}" inputmode="decimal" aria-label="APR"></td>
         <td class="r amt">${money(d.balance * d.apr / 1200, true)}</td>
+        <td class="linked">${linkedBills(d.id)}</td>
         <td><button class="rm" data-rm="debts" data-id="${d.id}" aria-label="Remove ${esc(d.name)}">×</button></td></tr>`).join("")}
-      </tbody><tfoot><tr><td>Total</td><td class="r amt">${money(S.debts.reduce((a, d) => a + d.balance, 0), true)}</td><td class="r amt">${money(S.debts.reduce((a, d) => a + d.min, 0), true)}</td><td></td><td class="r amt">${money(S.debts.reduce((a, d) => a + d.balance * d.apr / 1200, 0), true)}</td><td></td></tr></tfoot></table></div>
+      </tbody><tfoot><tr><td>Total</td><td class="r amt">${money(S.debts.reduce((a, d) => a + d.balance, 0), true)}</td><td class="r amt">${money(S.debts.reduce((a, d) => a + d.min, 0), true)}</td><td></td><td class="r amt">${money(S.debts.reduce((a, d) => a + d.balance * d.apr / 1200, 0), true)}</td><td></td><td></td></tr></tfoot></table></div>
       <div class="add-row"><button class="txt-btn" data-add="debts">Add a debt</button></div></section>
 
     ${MODE === "public" ? `<section class="panel"><div class="panel-head"><div><h2>Your data</h2><div class="sub">Everything is stored in this browser. Export a backup to move it to another device.</div></div></div>
@@ -592,14 +646,19 @@ document.addEventListener("click", e => {
     const f = document.getElementById((k === "people" ? "p-name-" : k === "bills" ? "b-amt-" : "d-name-") + item.id); if (f) f.focus();
     return;
   }
-  if (t.dataset.rm) { S[t.dataset.rm] = S[t.dataset.rm].filter(x => x.id !== t.dataset.id); commit(); return }
+  if (t.dataset.rm) {
+    S[t.dataset.rm] = S[t.dataset.rm].filter(x => x.id !== t.dataset.id);
+    if (t.dataset.rm === "debts") for (const b of S.bills) if (b.debtId === t.dataset.id) b.debtId = "";
+    commit(); return;
+  }
   const act = t.dataset.act;
   if (act === "go-setup") { ui.view = "setup"; render(); return }
-  if (act === "clear-month") { delete S.paid[ui.ym]; commit(); return }
+  if (act === "clear-month") { for (const b of S.bills) setPaid(ui.ym, b.id, false); delete S.paid[ui.ym]; commit(); return }
+  if (act === "check-month") { for (const b of S.bills) setPaid(ui.ym, b.id, true); commit(); return }
   if (act === "demo") {
     S = normalize(Object.assign(demoData(), { _demo: true }));
-    const now = new Date(), ym = ymOf(now); S.paid[ym] = {};
-    for (const b of S.bills) if (dueDay(b, ym) < now.getDate()) S.paid[ym][b.id] = true; commit(); ui.view = "month"; render(); return }
+    const now = new Date(), ym = ymOf(now);
+    for (const b of S.bills) if (dueDay(b, ym) < now.getDate()) setPaid(ym, b.id, true); commit(); ui.view = "month"; render(); return }
   if (act === "clear-ask") { document.getElementById("clearZone").innerHTML = `<span class="hint">Delete all income, bills, debts and checkmarks?</span> <button class="txt-btn danger" data-act="clear-yes">Yes, clear</button> <button class="txt-btn" data-act="clear-no">Keep</button>`; return }
   if (act === "clear-no") { render(); return }
   if (act === "clear-yes") { S = normalize(EMPTY()); commit(); return }
@@ -622,7 +681,7 @@ document.addEventListener("change", e => {
   if (t.dataset.k) {
     const item = S[t.dataset.k].find(x => x.id === t.dataset.id); if (!item) return;
     const f = t.dataset.f;
-    item[f] = f === "name" || f === "notes" ? t.value.trim() : f === "autopay" ? t.value === "1" : f === "day" ? Math.min(31, Math.max(1, Math.round(num(t.value)) || 1)) : Math.max(0, num(t.value));
+    item[f] = f === "name" || f === "notes" || f === "debtId" ? t.value.trim() : f === "autopay" ? t.value === "1" : f === "day" ? Math.min(31, Math.max(1, Math.round(num(t.value)) || 1)) : Math.max(0, num(t.value));
     if (S._demo) delete S._demo;
     commit();
   }
@@ -635,17 +694,17 @@ function demoData() {
     bills: [
       { name: "Rent", amount: 1950, day: 1, autopay: false }, { name: "Car insurance", amount: 210, day: 3, autopay: true },
       { name: "Internet", amount: 80, day: 6, autopay: true }, { name: "Music streaming", amount: 12, day: 8, autopay: true },
-      { name: "Electric & gas", amount: 185, day: 10, autopay: false }, { name: "Personal loan", amount: 390, day: 12, autopay: true },
-      { name: "Credit union loan", amount: 310, day: 16, autopay: true }, { name: "Phone plan", amount: 95, day: 18, autopay: true },
+      { name: "Electric & gas", amount: 185, day: 10, autopay: false }, { name: "Personal loan", amount: 390, day: 12, autopay: true, debtId: "x3" },
+      { name: "Credit union loan", amount: 310, day: 16, autopay: true, debtId: "x4" }, { name: "Phone plan", amount: 95, day: 18, autopay: true }, { name: "Store card", amount: 40, day: 14, autopay: true, debtId: "x1" },
       { name: "Student loan", amount: 160, day: 20, autopay: true }, { name: "Pet insurance", amount: 48, day: 21, autopay: true },
       { name: "Water & sewer", amount: 90, day: 25, autopay: false }, { name: "Life insurance", amount: 65, day: 25, autopay: true },
-      { name: "Car payment A", amount: 365, day: 26, autopay: false }, { name: "Car payment B", amount: 420, day: 28, autopay: false },
+      { name: "Car payment A", amount: 365, day: 26, autopay: false, debtId: "x2" }, { name: "Car payment B", amount: 420, day: 28, autopay: false, debtId: "x5" },
       { name: "Cloud storage", amount: 10, day: 30, autopay: true }
     ],
     debts: [
-      { name: "Store card", balance: 1250, min: 40, apr: 26.99 }, { name: "Car loan A", balance: 6400, min: 365, apr: 7.9 },
-      { name: "Personal loan", balance: 8200, min: 390, apr: 14.5 }, { name: "Credit union loan", balance: 11300, min: 310, apr: 11.2 },
-      { name: "Car loan B", balance: 15800, min: 420, apr: 4.9 }
+      { id: "x1", name: "Store card", balance: 1250, min: 40, apr: 26.99 }, { id: "x2", name: "Car loan A", balance: 6400, min: 365, apr: 7.9 },
+      { id: "x3", name: "Personal loan", balance: 8200, min: 390, apr: 14.5 }, { id: "x4", name: "Credit union loan", balance: 11300, min: 310, apr: 11.2 },
+      { id: "x5", name: "Car loan B", balance: 15800, min: 420, apr: 4.9 }
     ],
     extra: 150
   };
