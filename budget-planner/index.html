@@ -238,7 +238,8 @@ const monthName = ym => { const { y, m } = ymParts(ym); return new Date(y, m - 1
 const monthShort = (y, m) => new Date(y, m, 1).toLocaleString("en-US", { month: "short", year: "2-digit" }).replace(" ", " ’");
 
 function normalize(s) {
-  const b = Object.assign(EMPTY(), s || {});
+  // Deep copy first: saved data arrives frozen (read-only), so editing it in place would silently do nothing.
+  const b = Object.assign(EMPTY(), JSON.parse(JSON.stringify(s || {})));
   b.people = (b.people || []).map(p => ({ id: p.id || uid("p"), name: p.name || "", monthly: num(p.monthly) }));
   b.bills = (b.bills || []).map(x => ({ id: x.id || uid("b"), name: x.name || "", amount: num(x.amount), day: Math.min(31, Math.max(1, Math.round(num(x.day)) || 1)), autopay: !!x.autopay, notes: x.notes || "", debtId: x.debtId || "" }));
   b.debts = (b.debts || []).map(d => ({ id: d.id || uid("d"), name: d.name || "", balance: num(d.balance), min: num(d.min), apr: num(d.apr) }));
@@ -276,7 +277,7 @@ function privateStore() {
       ref = db.doc("budget/state");
       ref.onSnapshot(snap => {
         if (snap.metadata && snap.metadata.hasPendingWrites) return;
-        if (queued || timer) return; // local edits pending; ours win
+        if (queued || timer || writing) return; // local edits pending or in flight; ours win
         S = normalize(snap.exists ? snap.data() : EMPTY());
         ready = true; render();
         if (!readOnly) setStatus(snap.exists ? "Saved" : "Nothing saved yet");
