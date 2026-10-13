@@ -101,6 +101,14 @@ button { cursor: pointer }
 .pill.manual { background: var(--warn-soft); color: var(--warn) }
 .pill.late { background: var(--bad-soft); color: var(--bad) }
 .pill.debt { background: var(--sunk); color: var(--fg); border: 1px solid var(--line) }
+.pill.skip { background: transparent; color: var(--warn); border: 1px dotted var(--warn) }
+.skip-btn { border: 1px solid transparent; background: none; color: var(--muted); font-size: 12px; font-weight: 600; padding: 3px 8px; border-radius: 5px; white-space: nowrap }
+.skip-btn:hover { border-color: var(--line); color: var(--fg) }
+.skip-btn[aria-pressed="true"] { color: var(--warn); border-color: var(--warn-soft) }
+.check-list li.skipped .nm, .check-list li.skipped .amt { color: var(--muted); font-style: italic }
+.check-list li.skipped .amt { text-decoration: line-through }
+.chip.skipped { background: transparent; color: var(--muted); outline: 1px dotted var(--warn); font-style: italic }
+.skip-txt { color: var(--warn); font-weight: 600; font-family: var(--f-body) }
 .check-list .meta { flex-wrap: wrap }
 .head-acts { display: flex; gap: 8px; flex-wrap: wrap }
 .muted { color: var(--muted) }
@@ -232,7 +240,7 @@ tr.target .rank { background: var(--accent); color: var(--accent-fg) }
 const MODE = "public"; // "private" = Claude artifact db store, "public" = this browser's localStorage
 
 /* ---------- state ---------- */
-const EMPTY = () => ({ version: 1, people: [], bills: [], debts: [], extra: 0, method: "snowball", splitDay: 15, paid: {}, applied: {} });
+const EMPTY = () => ({ version: 1, people: [], bills: [], debts: [], extra: 0, method: "snowball", splitDay: 15, paid: {}, applied: {}, skipped: {} });
 let S = null;          // current state, null until loaded
 let ready = false;
 const ui = { view: "month", ym: ymOf(new Date()) };
@@ -260,6 +268,7 @@ function normalize(s) {
   b.method = b.method === "avalanche" ? "avalanche" : "snowball";
   b.paid = b.paid && typeof b.paid === "object" ? b.paid : {};
   b.applied = b.applied && typeof b.applied === "object" ? b.applied : {};
+  b.skipped = b.skipped && typeof b.skipped === "object" ? b.skipped : {};
   const debtIds = new Set(b.debts.map(d => d.id));
   for (const x of b.bills) if (x.debtId && !debtIds.has(x.debtId)) x.debtId = "";
   return b;
@@ -334,12 +343,37 @@ function isPaid(ym, id) { return !!(S.paid[ym] && S.paid[ym][id]) }
    Each application is recorded in S.applied[ym][billId] so unchecking
    reverses it exactly. */
 function setPaid(ym, id, val) {
+  if (val && isSkipped(ym, id)) setSkipped(ym, id, false);
   S.paid[ym] = S.paid[ym] || {};
   if (val && !S.paid[ym][id]) { S.paid[ym][id] = true; applyPayment(ym, id) }
   if (!val && S.paid[ym][id]) { delete S.paid[ym][id]; reversePayment(ym, id) }
   if (!Object.keys(S.paid[ym]).length) delete S.paid[ym];
 }
 function togglePaid(ym, id, val) { setPaid(ym, id, val); commit() }
+/* Skipping a bill drops it from that month's totals. If the bill pays down a
+   debt, it works like a skip-a-pay: no payment, but the month's interest is
+   still added to the balance. Undoing the skip reverses that exactly. */
+function isSkipped(ym, id) { return !!(S.skipped[ym] && S.skipped[ym][id]) }
+function setSkipped(ym, id, val) {
+  if (val === isSkipped(ym, id)) return;
+  if (val) {
+    if (isPaid(ym, id)) setPaid(ym, id, false);
+    S.skipped[ym] = S.skipped[ym] || {}; S.skipped[ym][id] = true;
+    applySkip(ym, id);
+  } else {
+    delete S.skipped[ym][id];
+    if (!Object.keys(S.skipped[ym]).length) delete S.skipped[ym];
+    reversePayment(ym, id);
+  }
+}
+function applySkip(ym, billId) {
+  const bill = S.bills.find(b => b.id === billId); if (!bill || !bill.debtId) return;
+  const debt = S.debts.find(d => d.id === bill.debtId); if (!debt) return;
+  const interest = entriesFor(ym, debt.id).some(([, e]) => e.interest > 0) ? 0 : round2(debt.balance * debt.apr / 1200);
+  debt.balance = round2(debt.balance + interest);
+  S.applied[ym] = S.applied[ym] || {};
+  S.applied[ym][billId] = { debtId: debt.id, payment: 0, interest, principal: -interest, skipped: true };
+}
 function entriesFor(ym, debtId) { return Object.entries(S.applied[ym] || {}).filter(([, e]) => e.debtId === debtId) }
 function applyPayment(ym, billId) {
   const bill = S.bills.find(b => b.id === billId); if (!bill || !bill.debtId) return;
@@ -367,6 +401,7 @@ function round2(n) { return Math.round(n * 100) / 100 }
 function debtName(id) { const d = S.debts.find(x => x.id === id); return d ? (d.name || "debt") : "" }
 function lateness(ym, bill) {
   if (isPaid(ym, bill.id)) return "paid";
+  if (isSkipped(ym, bill.id)) return "skipped";
   const now = new Date(), cur = ymOf(now);
   if (ym < cur) return "late";
   if (ym === cur && dueDay(bill, ym) < now.getDate()) return "late";
@@ -375,15 +410,17 @@ function lateness(ym, bill) {
 function summary(ym) {
   const income = S.people.reduce((a, p) => a + p.monthly, 0);
   const perCheck = income / 2;
-  const bills = S.bills.reduce((a, b) => a + b.amount, 0);
-  const first = S.bills.filter(b => dueDay(b, ym) < S.splitDay), second = S.bills.filter(b => dueDay(b, ym) >= S.splitDay);
+  const active = S.bills.filter(b => !isSkipped(ym, b.id)), skippedList = S.bills.filter(b => isSkipped(ym, b.id));
+  const bills = active.reduce((a, b) => a + b.amount, 0);
+  const first = active.filter(b => dueDay(b, ym) < S.splitDay), second = active.filter(b => dueDay(b, ym) >= S.splitDay);
   const sum = arr => arr.reduce((a, b) => a + b.amount, 0);
   const unpaid = arr => sum(arr.filter(b => !isPaid(ym, b.id)));
   return {
     income, perCheck, bills, after: income - bills,
     first, second, firstBills: sum(first), secondBills: sum(second),
     firstLeft: perCheck - sum(first), secondLeft: perCheck - sum(second),
-    firstUnpaid: unpaid(first), secondUnpaid: unpaid(second), unpaid: unpaid(S.bills)
+    firstUnpaid: unpaid(first), secondUnpaid: unpaid(second), unpaid: unpaid(active),
+    active, skippedList, skippedAmt: sum(skippedList)
   };
 }
 
@@ -393,14 +430,17 @@ function simulate(extra, method) {
   const order = [...debts].sort((a, b) => method === "avalanche" ? (b.apr - a.apr || a.bal - b.bal) : (a.bal - b.bal || b.apr - a.apr));
   const budget = debts.reduce((a, d) => a + d.min, 0) + Math.max(0, extra);
   const start = new Date(); start.setDate(1);
-  const done = new Set(Object.values(S.applied[ymOf(start)] || {}).map(e => e.debtId)); // already paid this month
-  const snap = () => debts.map(d => ({ id: d.id, name: d.name, bal: d.bal, pay: d._pay || 0, int: d._int || 0 }));
+  const startYm = ymOf(start);
+  // Payments and skips you've already recorded for a month are already in the balances, so that month's projection leaves those debts alone.
+  const handledIn = t => { const m = new Map(); for (const e of Object.values(S.applied[ymShift(startYm, t - 1)] || {})) { const prev = m.get(e.debtId); m.set(e.debtId, { skipped: (prev ? prev.skipped : true) && !!e.skipped }) } return m };
+  const snap = () => debts.map(d => ({ id: d.id, name: d.name, bal: d.bal, pay: d._pay || 0, int: d._int || 0, skip: !!d._skip }));
   const series = [{ t: 0, bal: debts.reduce((a, d) => a + d.bal, 0), debts: snap() }];
   let month = 0, totalInterest = 0;
   while (debts.some(d => d.bal > 0.005) && month < 600) {
     month++;
-    const skip = d => month === 1 && done.has(d.id);
-    for (const d of debts) { d._pay = 0; d._int = 0 }
+    const handled = handledIn(month);
+    const skip = d => handled.has(d.id);
+    for (const d of debts) { d._pay = 0; d._int = 0; d._skip = handled.has(d.id) && handled.get(d.id).skipped }
     for (const d of debts) if (d.bal > 0.005 && !skip(d)) { const i = d.bal * d.apr / 100 / 12; d.bal += i; d.interest += i; d._int = i; totalInterest += i }
     let pool = budget;
     for (const d of debts) if (skip(d)) pool -= d.min;
@@ -450,9 +490,9 @@ function renderMonth() {
   const ledger = `<dl class="ledger">
     ${S.people.map(p => `<div><dt>${esc(p.name || "Income")} · monthly</dt><dd>${money(p.monthly)}<small>${money(p.monthly / 2)} per paycheck</small></dd></div>`).join("")}
     <div><dt>Household income</dt><dd>${money(sm.income)}<small>${money(sm.perCheck)} per pay period</small></dd></div>
-    <div><dt>Monthly bills</dt><dd>${money(sm.bills)}<small>${S.bills.length} recurring</small></dd></div>
+    <div><dt>Bills this month</dt><dd>${money(sm.bills)}<small>${sm.skippedList.length ? `${sm.skippedList.length} skipped (${money(sm.skippedAmt)})` : `${S.bills.length} recurring`}</small></dd></div>
     <div><dt>After bills</dt><dd class="${sm.after < 0 ? "neg" : ""}">${money(sm.after)}<small>left to budget each month</small></dd></div>
-    <div><dt>Still to pay</dt><dd>${money(sm.unpaid)}<small>${S.bills.length - paidCount} of ${S.bills.length} bills open</small></dd></div>
+    <div><dt>Still to pay</dt><dd>${money(sm.unpaid)}<small>${sm.active.length - paidCount} of ${sm.active.length} bills open</small></dd></div>
   </dl>`;
 
   const half = (title, range, bills, left, unpaid, list) => {
@@ -478,18 +518,18 @@ function renderMonth() {
   // checklist
   const sorted = [...S.bills].sort((a, b) => dueDay(a, ym) - dueDay(b, ym) || a.name.localeCompare(b.name));
   const row = b => {
-    const st = lateness(ym, b), d = dueDay(b, ym);
-    return `<li class="${st === "paid" ? "done" : ""}">
+    const st = lateness(ym, b), d = dueDay(b, ym), sk = st === "skipped";
+    return `<li class="${st === "paid" ? "done" : sk ? "skipped" : ""}">
       <input type="checkbox" class="box" id="chk-${b.id}" data-bill="${b.id}" ${st === "paid" ? "checked" : ""} aria-label="Mark ${esc(b.name)} paid">
-      <label for="chk-${b.id}" class="name"><span class="nm">${esc(b.name)}</span><span class="meta"><span class="mono">${mon} ${d}</span>${b.autopay ? `<span class="pill auto">Autopay</span>` : `<span class="pill manual">Pay manually</span>`}${b.debtId ? `<span class="pill debt">Pays ${esc(debtName(b.debtId))}</span>` : ""}${st === "late" ? `<span class="pill late">Past due</span>` : ""}</span></label>
-      <span></span>
+      <label for="chk-${b.id}" class="name"><span class="nm">${esc(b.name)}</span><span class="meta"><span class="mono">${mon} ${d}</span>${b.autopay ? `<span class="pill auto">Autopay</span>` : `<span class="pill manual">Pay manually</span>`}${b.debtId ? `<span class="pill debt">Pays ${esc(debtName(b.debtId))}</span>` : ""}${st === "late" ? `<span class="pill late">Past due</span>` : ""}${sk ? `<span class="pill skip">${b.debtId ? "Skip-a-pay · interest added" : "Skipped this month"}</span>` : ""}</span></label>
+      <button class="skip-btn" data-skip="${b.id}" aria-pressed="${sk}" title="${sk ? "Put this bill back on this month" : b.debtId ? "Skip this month's payment. Interest is still added to the balance." : "Skip this bill this month"}">${sk ? "Undo skip" : "Skip"}</button>
       <span class="amt">${money(b.amount, true)}</span>
     </li>`;
   };
   const group = (label, list) => list.length ? `<div class="group-label"><span>${label}</span><span class="mono">${money(list.reduce((a, b) => a + b.amount, 0))}</span></div><ul class="check-list">${list.map(row).join("")}</ul>` : "";
   const checklist = `<section class="panel" aria-labelledby="cl-h">
-    <div class="panel-head"><div><h2 id="cl-h">Bill checklist</h2><div class="sub">${paidCount} of ${S.bills.length} paid in ${monthName(ym)}. Checks reset each month.</div></div>
-    <div class="head-acts">${S.bills.length && paidCount < S.bills.length ? `<button class="txt-btn" data-act="check-month">Check all</button>` : ""}${paidCount ? `<button class="txt-btn" data-act="clear-month">Uncheck all</button>` : ""}</div></div>
+    <div class="panel-head"><div><h2 id="cl-h">Bill checklist</h2><div class="sub">${paidCount} of ${sm.active.length} paid in ${monthName(ym)}${sm.skippedList.length ? `, ${sm.skippedList.length} skipped` : ""}. Checks reset each month.</div></div>
+    <div class="head-acts">${sm.active.length && paidCount < sm.active.length ? `<button class="txt-btn" data-act="check-month">Check all</button>` : ""}${paidCount ? `<button class="txt-btn" data-act="clear-month">Uncheck all</button>` : ""}</div></div>
     ${S.bills.length ? group(`Days 1–${sd - 1}`, sorted.filter(b => dueDay(b, ym) < sd)) + group(`Days ${sd}–${last}`, sorted.filter(b => dueDay(b, ym) >= sd))
       : `<div class="empty"><h3>No bills yet</h3>Add your recurring bills in Setup.<br><button class="txt-btn primary" data-act="go-setup">Add bills</button></div>`}
   </section>`;
@@ -508,7 +548,7 @@ function renderMonth() {
     const tot = list.reduce((a, b) => a + b.amount, 0);
     cells += `<div class="day${isCur && d === now.getDate() ? " today" : ""}${d === sd ? " split" : ""}">
       <div class="dnum"><b>${d}</b>${tot ? `<span class="dtot">${money(tot)}</span>` : ""}</div>
-      ${list.map(b => { const st = lateness(ym, b); return `<button class="chip ${st === "paid" ? "paid" : st === "late" ? "late" : b.autopay ? "auto" : ""}" data-bill="${b.id}" data-toggle="1" title="${esc(b.name)} · ${money(b.amount, true)} · ${st === "paid" ? "paid, click to unmark" : "click to mark paid"}"><span>${esc(b.name)}</span><em>${money(b.amount)}</em></button>` }).join("")}
+      ${list.map(b => { const st = lateness(ym, b); return `<button class="chip ${st === "paid" ? "paid" : st === "skipped" ? "skipped" : st === "late" ? "late" : b.autopay ? "auto" : ""}" data-bill="${b.id}" data-toggle="1" title="${esc(b.name)} · ${money(b.amount, true)} · ${st === "paid" ? "paid, click to unmark" : st === "skipped" ? "skipped this month, click to undo the skip" : "click to mark paid"}"><span>${esc(b.name)}</span><em>${money(b.amount)}</em></button>` }).join("")}
     </div>`;
   }
   const trailing = (7 - ((first + last) % 7)) % 7;
@@ -516,7 +556,7 @@ function renderMonth() {
   const calendar = `<section class="panel" aria-labelledby="cal-h">
     <div class="panel-head"><div><h2 id="cal-h">Payment calendar</h2><div class="sub">Tap a payment to mark it paid. Bills due on the 29th–31st land on the last day of shorter months.</div></div></div>
     <div class="cal">${cells}</div>
-    <div class="legend"><span><i style="background:var(--accent-soft)"></i>Autopay</span><span><i style="background:var(--warn-soft)"></i>Pay manually</span><span><i style="background:var(--bad-soft)"></i>Past due</span><span><i style="outline:1px dashed var(--muted)"></i>Paid</span><span><i style="background:var(--warn)"></i>Second pay period starts</span></div>
+    <div class="legend"><span><i style="background:var(--accent-soft)"></i>Autopay</span><span><i style="background:var(--warn-soft)"></i>Pay manually</span><span><i style="background:var(--bad-soft)"></i>Past due</span><span><i style="outline:1px dashed var(--muted)"></i>Paid</span><span><i style="outline:1px dotted var(--warn)"></i>Skipped</span><span><i style="background:var(--warn)"></i>Second pay period starts</span></div>
   </section>`;
 
   el.innerHTML = ledger + halves + `<div class="grid2">${checklist}${calendar}</div>`;
@@ -526,6 +566,7 @@ function paidThisMonth(debtId) {
   const es = entriesFor(ymOf(new Date()), debtId).map(([, e]) => e);
   if (!es.length) return S.bills.some(b => b.debtId === debtId) ? `<span class="muted">Not yet</span>` : `<span class="muted">No linked bill</span>`;
   const p = es.reduce((a, e) => a + e.payment, 0), i = es.reduce((a, e) => a + e.interest, 0);
+  if (es.every(e => e.skipped)) return `<span class="skip-txt">Skipped</span><br><span class="muted" style="font-size:12px">${money(i, true)} interest added</span>`;
   return `${money(p, true)}<br><span class="muted" style="font-size:12px">${money(i, true)} interest</span>`;
 }
 function renderSnowball() {
@@ -566,7 +607,7 @@ function renderSnowball() {
       <td class="r amt">${money(d.balance * d.apr / 1200, true)}</td><td class="r amt">${paidThisMonth(d.id)}</td><td class="r amt">${d.paidOff ? ds(sim.at(d.paidOff)) : "—"}</td><td class="r amt">${money(d.interest, true)}</td></tr>`;
   }).join("");
   const table = `<section class="panel" style="margin-top:16px">
-    <div class="panel-head"><h2>Payoff order</h2><span class="sub">The highlighted debt gets every extra dollar. When it’s paid off, its payment rolls into the next one. Balances drop as you check off linked bills, and the projection starts after this month’s payments.</span></div>
+    <div class="panel-head"><h2>Payoff order</h2><span class="sub">The highlighted debt gets every extra dollar. When it’s paid off, its payment rolls into the next one. Balances drop as you check off linked bills. A skipped payment adds that month’s interest instead, and the projection leaves out any month you’ve already paid or skipped.</span></div>
     <div class="tbl-wrap"><table><thead><tr><th>#</th><th>Debt</th><th class="r">Balance</th><th class="r">Minimum</th><th class="r">APR</th><th class="r">Interest / mo</th><th class="r">Paid this month</th><th class="r">Paid off</th><th class="r">Interest paid</th></tr></thead><tbody>${rows}</tbody></table></div>
   </section>`;
   el.innerHTML = `<div class="sb-top">${controls}<section class="panel"><div class="panel-head"><h2>Balance over time</h2><span class="sub">Total remaining across all debts</span></div><div class="chart-box">${chart}</div></section></div>${table}`;
@@ -618,7 +659,7 @@ function showTip(ev) {
   const rows = sim.order.map(o => {
     const d = p.debts.find(z => z.id === o.id);
     const state = d.bal <= 0.005 ? `<span class="ok">Paid off</span>` : money(d.bal, true);
-    const sub = t > 0 && d.pay > 0 ? `<small>paid ${money(d.pay, true)}${d.int > 0.005 ? ` · ${money(d.int, true)} interest` : ""}</small>` : "";
+    const sub = t > 0 && d.skip && d.bal > 0.005 ? `<small>skip-a-pay this month</small>` : t > 0 && d.pay > 0 ? `<small>paid ${money(d.pay, true)}${d.int > 0.005 ? ` · ${money(d.int, true)} interest` : ""}</small>` : "";
     return `<li class="${target && d.id === target.id ? "tgt" : ""}"><span>${esc(d.name)}${sub}</span><b>${state}</b></li>`;
   }).join("");
   const tip = document.getElementById("chartTip");
@@ -667,7 +708,7 @@ function renderSetup() {
       </tbody></table></div>
       <div class="add-row"><button class="txt-btn" data-add="bills">Add a bill</button><span class="hint">Bills stay sorted by due day.</span></div></section>
 
-    <section class="panel"><div class="panel-head"><div><h2>Debts</h2><div class="sub">Feeds the debt snowball. Checking off a linked bill pays down its debt, with an estimate of that month’s interest. Replace balances with your statement figures every month or two to stay exact.</div></div></div>
+    <section class="panel"><div class="panel-head"><div><h2>Debts</h2><div class="sub">Feeds the debt snowball. Checking off a linked bill pays down its debt, with an estimate of that month’s interest. Skipping it (skip-a-pay) adds the interest with no payment. Replace balances with your statement figures every month or two to stay exact.</div></div></div>
       <div class="tbl-wrap"><table class="edit"><thead><tr><th>Debt</th><th class="r">Balance</th><th class="r">Minimum</th><th class="r">APR %</th><th class="r">Interest / mo</th><th>Paid by</th><th></th></tr></thead><tbody>
       ${S.debts.map(d => `<tr>
         <td style="min-width:160px"><input id="d-name-${d.id}" data-k="debts" data-id="${d.id}" data-f="name" value="${esc(d.name)}" placeholder="Debt name" aria-label="Debt name"></td>
@@ -693,7 +734,8 @@ document.addEventListener("click", e => {
   if (t.id === "prevM") { ui.ym = ymShift(ui.ym, -1); render(); return }
   if (t.id === "nextM") { ui.ym = ymShift(ui.ym, 1); render(); return }
   if (t.id === "todayM") { ui.ym = ymOf(new Date()); render(); return }
-  if (t.dataset.toggle) { togglePaid(ui.ym, t.dataset.bill, !isPaid(ui.ym, t.dataset.bill)); return }
+  if (t.dataset.toggle) { const id = t.dataset.bill; if (isSkipped(ui.ym, id)) { setSkipped(ui.ym, id, false); commit() } else togglePaid(ui.ym, id, !isPaid(ui.ym, id)); return }
+  if (t.dataset.skip) { setSkipped(ui.ym, t.dataset.skip, !isSkipped(ui.ym, t.dataset.skip)); commit(); return }
   if (t.dataset.add) {
     const k = t.dataset.add, item = k === "people" ? { id: uid("p"), name: "", monthly: 0 } : k === "bills" ? { id: uid("b"), name: "", amount: 0, day: 1, autopay: false, notes: "" } : { id: uid("d"), name: "", balance: 0, min: 0, apr: 0 };
     S[k].push(item); commit();
@@ -708,7 +750,7 @@ document.addEventListener("click", e => {
   const act = t.dataset.act;
   if (act === "go-setup") { ui.view = "setup"; render(); return }
   if (act === "clear-month") { for (const b of S.bills) setPaid(ui.ym, b.id, false); delete S.paid[ui.ym]; commit(); return }
-  if (act === "check-month") { for (const b of S.bills) setPaid(ui.ym, b.id, true); commit(); return }
+  if (act === "check-month") { for (const b of S.bills) if (!isSkipped(ui.ym, b.id)) setPaid(ui.ym, b.id, true); commit(); return }
   if (act === "demo") {
     S = normalize(Object.assign(demoData(), { _demo: true }));
     const now = new Date(), ym = ymOf(now);
